@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
+"""
+Convert Insomnia collection JSON to a Postman collection JSON.
+Requires Python 3.
+"""
 import json
 import argparse
 import sys
+from urllib.parse import urlencode
 
 
 def load_insomnia_collection(path):
     """Load Insomnia JSON export from disk."""
     with open(path, 'r', encoding='utf-8') as f:
         return json.load(f)
-
-
-def build_id_map(resources):
-    """Map resource _id to resource object."""
-    return {res['_id']: res for res in resources}
 
 
 def transform_request(ins_req):
@@ -29,10 +29,7 @@ def transform_request(ins_req):
 
     # Headers
     for hdr in ins_req.get("headers", []):
-        pm_req["request"]["header"].append({
-            "key": hdr.get("name"),
-            "value": hdr.get("value")
-        })
+        pm_req["request"]["header"].append({"key": hdr.get("name"), "value": hdr.get("value")})
 
     # Body
     body = ins_req.get("body", {})
@@ -41,20 +38,34 @@ def transform_request(ins_req):
         pm_req["request"]["body"] = {"mode": "raw", "raw": text}
         mime = body.get("mimeType")
         if mime:
-            pm_req["request"]["body"]["options"] = {"raw": {"language": mime.split("/")[-1]}}
+            pm_req["request"]["body"].setdefault("options", {})
+            pm_req["request"]["body"]["options"]["raw"] = {"language": mime.split("/")[-1]}
 
-    # URL
-    url = ins_req.get("url")
-    if isinstance(url, str):
-        pm_req["request"]["url"] = {"raw": url}
-    else:
-        pm_req["request"]["url"] = url
+    # URL reconstruction
+    url_field = ins_req.get("url")
+    raw_url = ""
+    if isinstance(url_field, str):
+        raw_url = url_field
+    elif isinstance(url_field, dict):
+        protocol = url_field.get("protocol", "")
+        host = url_field.get("host")
+        host_str = ".".join(host) if isinstance(host, list) else (host or "")
+        path = url_field.get("path")
+        path_str = "/".join(path) if isinstance(path, list) else (path or "")
+        raw_url = f"{protocol}://{host_str}"
+        if path_str:
+            raw_url += f"/{path_str}"
+        query = url_field.get("query", [])
+        if query:
+            params = {q.get("name"): q.get("value") for q in query}
+            raw_url += f"?{urlencode(params)}"
+    pm_req["request"]["url"] = {"raw": raw_url}
 
     return pm_req
 
 
 def convert(insomnia_data, schema_identifier):
-    """Convert entire Insomnia collection JSON into Postman collection JSON."""
+    """Convert Insomnia collection JSON into Postman collection JSON."""
     resources = insomnia_data.get("resources", [])
     workspace = next((r for r in resources if r.get("_type") == "workspace"), None)
     if workspace is None:
@@ -65,13 +76,10 @@ def convert(insomnia_data, schema_identifier):
         "item": []
     }
 
-    # Prepare request groups (folders)
-    folder_map = {}
-    for r in resources:
-        if r.get("_type") == "request_group":
-            folder_map[r["_id"]] = {"name": r.get("name"), "item": []}
+    # Prepare request groups as folders
+    folder_map = {r["_id"]: {"name": r.get("name"), "item": []} for r in resources if r.get("_type") == "request_group"}
 
-    # Process individual requests
+    # Process each request
     for r in resources:
         if r.get("_type") == "request":
             pm_req = transform_request(r)
@@ -91,14 +99,13 @@ def convert(insomnia_data, schema_identifier):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Convert Insomnia collection to Postman collection offline"
+        description="Convert Insomnia collection to Postman collection (Python 3 only)"
     )
     parser.add_argument("input", help="Path to Insomnia JSON export")
     parser.add_argument("output", help="Path to save Postman JSON")
     parser.add_argument(
-        "--schema",
-        required=True,
-        help="Local identifier for Postman schema (e.g., filename or schema string)"
+        "--schema", required=True,
+        help="Local schema identifier (e.g., filename or schema string)"
     )
     args = parser.parse_args()
 
@@ -111,7 +118,6 @@ def main():
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()

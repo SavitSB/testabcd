@@ -1,5 +1,5 @@
 // === Configuration ===
-// Change this to the History Reference ID of your original token request
+// Set this to the History Reference ID of your original token request
 var TOKEN_HISTORY_REF_ID = 42;
 
 var TOKEN_HEADER    = 'X-Custom-Token';  // your custom auth header
@@ -37,7 +37,7 @@ function sendingRequest(msg, initiator, helper) {
 
 /**
  * Fetches a fresh token by re‑sending the original token request from History.
- * @returns {string} access_token or '' on error
+ * @returns {string} issued_token or '' on error
  */
 function fetchTokenFromHistory() {
     try {
@@ -59,15 +59,15 @@ function fetchTokenFromHistory() {
         );
         sender.sendAndReceive(tokenMsg, true);
 
-        // Parse out the token
+        // Parse out the issued_token
         var resp = tokenMsg.getResponseBody().toString();
         var json = JSON.parse(resp);
-        if (!json.access_token) {
-            throw 'access_token missing in response';
+        if (!json.issued_token) {
+            throw 'issued_token missing in response';
         }
 
-        print('[TokenRefresh] Retrieved token: ' + json.access_token.substring(0,8) + '…');
-        return json.access_token;
+        print('[TokenRefresh] Retrieved token: ' + json.issued_token.substring(0,8) + '…');
+        return json.issued_token;
 
     } catch (e) {
         print('[TokenRefresh] ERROR fetching token: ' + e);

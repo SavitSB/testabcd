@@ -1,23 +1,25 @@
 import time
 
 def queueRequests(target, wordlists):
-    # pick Turbo Intruder’s HTTP/2 stack
-    req_engine = RequestEngine(
+    # Configure the engine for high throughput
+    engine = RequestEngine(
         endpoint=target.endpoint,
         concurrentConnections=10,
-        pipeline=False,
-        engine=engine.HTTP2
+        pipeline=False
     )
 
-    # throttle to ~10 000 RPM (≈167 RPS)
-    interval = 60.0 / 10000
-    end_time = time.time() + 60
+    # Calculate sleep interval to hit ~10000 RPM
+    interval = 60.0 / 10000  # ~0.006 seconds per request
 
-    while time.time() < end_time:
-        req_engine.queue(target.req)  # null payload
-        time.sleep(interval)
+    # Send requests for 60 seconds at the calculated rate
+    start_time = time.time()
+    while time.time() - start_time < 60:
+        engine.queue(target.req)    # queue the unmodified (null) payload
+        time.sleep(interval)        # throttle to maintain target RPM
 
-    req_engine.start()
+    # Kick off the attack
+    engine.start()
 
 def handleResponse(req, interesting):
+    # Log all responses to the results table
     table.add(req)

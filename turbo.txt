@@ -1,0 +1,18 @@
+def queueRequests(target, wordlists):
+    """Send the base request as-is using HTTP/2 at 10000 RPM."""
+    engine = RequestEngine(
+        endpoint=target.endpoint,
+        concurrentConnections=100,
+        requestsPerMinute=10000,
+        pipeline=False,
+        engine=Engine.BURP2,
+    )
+
+    # queue the request without modification
+    engine.queue(target.req)
+    engine.start()
+
+
+def handleResponse(req, interesting):
+    """Log every response."""
+    table.add(req)
